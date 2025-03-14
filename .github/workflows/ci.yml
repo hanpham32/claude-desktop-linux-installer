@@ -1,0 +1,122 @@
+name: Claude Desktop Installer CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Shellcheck Syntax Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: "./"
+          severity: "warning"
+
+  test-ubuntu:
+    name: Test Installation on Ubuntu
+    needs: lint
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install dependencies for testing
+        run: |
+          apt-get update
+          apt-get install -y curl sudo
+
+      - name: Make script executable
+        run: chmod +x ./claude-install.sh
+
+      - name: Run installation in test mode
+        run: ./claude-install.sh --test-env
+
+      - name: Verify test environment setup
+        run: |
+          cd claude-test-env
+          chmod +x ./test-install.sh
+          TEST_OUTPUT=$(./test-install.sh)
+          if [[ $TEST_OUTPUT == *"Test successful"* ]]; then
+            echo "Test passed successfully on Ubuntu"
+            exit 0
+          else
+            echo "Test failed on Ubuntu"
+            echo "$TEST_OUTPUT"
+            exit 1
+          fi
+
+  test-debian:
+    name: Test Installation on Debian
+    needs: lint
+    runs-on: ubuntu-latest
+    container:
+      image: debian:stable
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install dependencies for testing
+        run: |
+          apt-get update
+          apt-get install -y curl sudo
+
+      - name: Make script executable
+        run: chmod +x ./claude-install.sh
+
+      - name: Run installation in test mode
+        run: ./claude-install.sh --test-env
+
+      - name: Verify test environment setup
+        run: |
+          cd claude-test-env
+          chmod +x ./test-install.sh
+          TEST_OUTPUT=$(./test-install.sh)
+          if [[ $TEST_OUTPUT == *"Test successful"* ]]; then
+            echo "Test passed successfully on Debian"
+            exit 0
+          else
+            echo "Test failed on Debian"
+            echo "$TEST_OUTPUT"
+            exit 1
+          fi
+
+  test-arch:
+    name: Test Installation on Arch Linux
+    needs: lint
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install dependencies for testing
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm curl sudo
+
+      - name: Make script executable
+        run: chmod +x ./claude-install.sh
+
+      - name: Run installation in test mode
+        run: ./claude-install.sh --test-env
+
+      - name: Verify test environment setup
+        run: |
+          cd claude-test-env
+          chmod +x ./test-install.sh
+          TEST_OUTPUT=$(./test-install.sh)
+          if [[ $TEST_OUTPUT == *"Test successful"* ]]; then
+            echo "Test passed successfully on Arch Linux"
+            exit 0
+          else
+            echo "Test failed on Arch Linux"
+            echo "$TEST_OUTPUT"
+            exit 1
+          fi
