@@ -1,17 +1,19 @@
 #!/bin/bash
-# Make executable with: chmod +x ubuntu-claude-install.sh
+# Make executable with: chmod +x claude-install.sh
 #
-# All-in-one script for Claude Desktop on Ubuntu
+# Unified All-in-one script for Claude Desktop on Linux
 #
 # This script will:
-# 1. Install required dependencies
-# 2. Download and build Claude Desktop for Linux
-# 3. Install the application to the user's local application directory
+# 1. Detect your Linux distribution (Ubuntu/Debian or Arch-based)
+# 2. Install required dependencies for your specific platform
+# 3. Download and build Claude Desktop for Linux
+# 4. Install the application to the user's local application directory
 #
-# Usage: ./ubuntu-claude-install.sh
-#        ./ubuntu-claude-install.sh --clean-install
-#        ./ubuntu-claude-install.sh --remove
-#        ./ubuntu-claude-install.sh --help
+# Usage: ./claude-install.sh
+#        ./claude-install.sh --clean-install
+#        ./claude-install.sh --remove
+#        ./claude-install.sh --help
+#        ./claude-install.sh --test-env
 
 set -euo pipefail
 
@@ -21,6 +23,13 @@ CLAUDE_URL="https://storage.googleapis.com/osprey-downloads-c02f6a0d-347c-492b-a
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="${SCRIPT_DIR}/claude-build"
 OUTPUT_DIR="${SCRIPT_DIR}/claude-desktop"
+TEST_ENV_DIR="${SCRIPT_DIR}/claude-test-env"
+
+# Distribution detection variables
+DISTRO=""
+IS_ARCH=false
+IS_DEBIAN=false
+IS_UBUNTU=false
 
 # Logging functions
 log_info() {
@@ -45,18 +54,53 @@ trap 'handle_error $LINENO' ERR
 
 # Display help menu
 show_help() {
-  echo -e "Claude Desktop for Ubuntu Installation Script"
+  echo -e "Claude Desktop for Linux Installation Script"
   echo -e "Usage: ${0} [OPTION]"
   echo -e "\nOptions:"
   echo -e "  --help\t\tShow this help menu"
   echo -e "  --install\t\tInstall Claude Desktop (default if no option is provided)"
   echo -e "  --clean-install\tRemove existing installation and install fresh"
   echo -e "  --remove\t\tUninstall Claude Desktop completely"
+  echo -e "  --test-env\t\tCreate a test environment for the installation"
   echo -e "\nExamples:"
   echo -e "  ${0}\t\t\tInstall Claude Desktop"
   echo -e "  ${0} --clean-install\tPerform a clean installation"
   echo -e "  ${0} --remove\t\tRemove Claude Desktop"
-  echo -e "\nModified from: https://github.com/astrosteveo/claude-desktop-linux-bash"
+  echo -e "  ${0} --test-env\t\tTest installation in isolated environment"
+}
+
+# Detect Linux distribution
+detect_distribution() {
+  log_info "Detecting Linux distribution..."
+
+  # Check for Arch Linux
+  if [ -f /etc/arch-release ]; then
+    DISTRO="arch"
+    IS_ARCH=true
+    log_info "Detected Arch Linux"
+    return
+  fi
+
+  # Check for Debian/Ubuntu
+  if [ -f /etc/debian_version ]; then
+    # Check if it's Ubuntu specifically
+    if [ -f /etc/lsb-release ] && grep -q "Ubuntu" /etc/lsb-release; then
+      DISTRO="ubuntu"
+      IS_UBUNTU=true
+      log_info "Detected Ubuntu"
+    else
+      DISTRO="debian"
+      IS_DEBIAN=true
+      log_info "Detected Debian"
+    fi
+    return
+  fi
+
+  # If we reach here, it's an unsupported distribution
+  log_error "Unsupported Linux distribution. This script supports Ubuntu, Debian, and Arch Linux."
+  log_error "You might still be able to use this script by examining your distribution's package manager"
+  log_error "and manually adapting the script."
+  exit 1
 }
 
 # Check for the correct ImageMagick command
@@ -71,14 +115,14 @@ check_image_command() {
   return 0
 }
 
-# Install required dependencies
-install_dependencies() {
-  log_info "Installing required dependencies..."
+# Install required dependencies for Debian/Ubuntu
+install_dependencies_debian() {
+  log_info "Installing required dependencies for Debian/Ubuntu..."
 
   # Define required packages - base packages that are architecture-independent
   local REQUIRED_PACKAGES="p7zip-full cargo rustc imagemagick icoutils wget xdg-utils"
 
-  # Try to detect if system is using t64 packages
+  # Try to detect if system is using t64 packages (Ubuntu 24.04+)
   if apt-cache search libatk | grep -q 'libatk1.0-0t64'; then
     log_info "Detected t64 package naming scheme"
     # Use t64 packages
@@ -191,6 +235,79 @@ install_dependencies() {
 
   if [ ${#missing[@]} -ne 0 ]; then
     log_error "Still missing required dependencies: ${missing[*]}"
+    exit 1
+  fi
+}
+
+# Install required dependencies for Arch Linux
+install_dependencies_arch() {
+  log_info "Installing required dependencies for Arch Linux..."
+
+  # Define required packages
+  local REQUIRED_PACKAGES="p7zip nodejs rust cargo electron imagemagick icoutils wget"
+
+  # Check if packages are already installed
+  local PACKAGES_TO_INSTALL=()
+  for pkg in $REQUIRED_PACKAGES; do
+    if ! pacman -Q "$pkg" &>/dev/null; then
+      PACKAGES_TO_INSTALL+=("$pkg")
+    fi
+  done
+
+  # Install missing packages
+  if [ ${#PACKAGES_TO_INSTALL[@]} -gt 0 ]; then
+    log_info "Installing packages: ${PACKAGES_TO_INSTALL[*]}"
+    sudo pacman -Sy --needed --noconfirm ${PACKAGES_TO_INSTALL[@]}
+  else
+    log_info "All required packages are already installed."
+  fi
+
+  # Install pnpm if not already installed
+  if ! command -v pnpm &>/dev/null; then
+    log_info "Installing pnpm..."
+    curl -fsSL https://get.pnpm.io/install.sh | sh -
+
+    # Source pnpm in the current session
+    export PNPM_HOME="${HOME}/.local/share/pnpm"
+    export PATH="${PNPM_HOME}:${PATH}"
+
+    # Check if pnpm was installed correctly
+    if ! command -v pnpm &>/dev/null; then
+      log_error "Failed to install pnpm. Please install it manually: curl -fsSL https://get.pnpm.io/install.sh | sh -"
+      exit 1
+    fi
+  fi
+
+  # Check for required tools after installation
+  log_info "Checking for required tools..."
+  local deps=("7z" "pnpm" "node" "cargo" "rustc" "electron" "wrestool" "icotool")
+  local missing=()
+
+  for dep in "${deps[@]}"; do
+    if ! command -v "$dep" >/dev/null 2>&1; then
+      missing+=("$dep")
+    fi
+  done
+
+  # Check for either magick or convert
+  if ! check_image_command; then
+    missing+=("ImageMagick")
+  fi
+
+  if [ ${#missing[@]} -ne 0 ]; then
+    log_error "Still missing required dependencies: ${missing[*]}"
+    exit 1
+  fi
+}
+
+# Dispatcher for dependency installation
+install_dependencies() {
+  if $IS_ARCH; then
+    install_dependencies_arch
+  elif $IS_DEBIAN || $IS_UBUNTU; then
+    install_dependencies_debian
+  else
+    log_error "Unsupported distribution for dependency installation"
     exit 1
   fi
 }
@@ -862,145 +979,30 @@ process_asar() {
   }
 }
 
-# Create launcher script
+# Create launcher script based on distribution
 create_launcher() {
   log_info "Creating launcher script..."
   mkdir -p "$OUTPUT_DIR/bin"
 
+  # Create a unified launcher script that works across distributions
   cat >"$OUTPUT_DIR/bin/claude-desktop" <<EOF
 #!/bin/bash
-electron "$HOME/.local/lib/claude-desktop/app.asar" \
-    \${WAYLAND_DISPLAY:+--ozone-platform-hint=auto --enable-features=WaylandWindowDecorations} "\$@"
+# Generated by Claude Desktop Linux Installer
+
+# Ensure ~/.local/bin is in PATH for tools
+export PATH="\$HOME/.local/bin:\$PATH"
+
+# Set icon and app name parameters
+ICON_PARAMS="--icon=\$HOME/.local/share/icons/hicolor/256x256/apps/claude.png --app-name=Claude"
+
+# Set Wayland parameters if needed
+WAYLAND_PARAMS=""
+if [ -n "\$WAYLAND_DISPLAY" ]; then
+    WAYLAND_PARAMS="--ozone-platform-hint=auto --enable-features=WaylandWindowDecorations"
+fi
+
+# Launch with electron, ensuring icon comes first
+electron "\$HOME/.local/lib/claude-desktop/app.asar" \$ICON_PARAMS \$WAYLAND_PARAMS "\$@"
 EOF
   chmod +x "$OUTPUT_DIR/bin/claude-desktop"
 }
-
-# Install Claude Desktop to user's local application directory
-install_claude_desktop() {
-  log_info "Installing Claude Desktop to user's local directories..."
-
-  # Get the path to electron
-  ELECTRON_PATH=$(which electron)
-  if [ -z "$ELECTRON_PATH" ]; then
-    log_error "Electron not found in PATH. Installation failed."
-    exit 1
-  fi
-  log_info "Using electron path: $ELECTRON_PATH"
-
-  # Create necessary directories
-  mkdir -p "${HOME}/.local/bin"
-  mkdir -p "${HOME}/.local/share/applications"
-  mkdir -p "${HOME}/.local/share/icons"
-  mkdir -p "${HOME}/.local/lib"
-
-  # Copy app files
-  cp -r "${OUTPUT_DIR}/lib/claude-desktop" "${HOME}/.local/lib/"
-  cp "${OUTPUT_DIR}/bin/claude-desktop" "${HOME}/.local/bin/"
-
-  # Create the .desktop file with the correct path
-  cat >"${HOME}/.local/share/applications/claude-desktop.desktop" <<EOF
-[Desktop Entry]
-Name=Claude Desktop
-Comment=Claude AI Assistant
-Exec=${ELECTRON_PATH} ${HOME}/.local/lib/claude-desktop/app.asar
-Icon=claude
-Type=Application
-Terminal=false
-Categories=Utility;
-MimeType=x-scheme-handler/claude
-StartupWMClass=claude-desktop
-EOF
-
-  # Copy icons
-  cp -r "${OUTPUT_DIR}/share/icons/"* "${HOME}/.local/share/icons/"
-
-  # Update .desktop database
-  if command -v update-desktop-database &>/dev/null; then
-    update-desktop-database "${HOME}/.local/share/applications"
-  else
-    log_warning "update-desktop-database not found. Desktop entry might not be immediately visible."
-  fi
-
-  # Set up Claude protocol handler
-  xdg-mime default claude-desktop.desktop x-scheme-handler/claude
-
-  log_info "Adding ${HOME}/.local/bin to PATH if not already there..."
-  if ! grep -q "export PATH=\"\$HOME/.local/bin:\$PATH\"" "${HOME}/.bashrc"; then
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >>"${HOME}/.bashrc"
-    log_info "Added ${HOME}/.local/bin to PATH in .bashrc"
-  fi
-
-  if [ -f "${HOME}/.zshrc" ]; then
-    if ! grep -q "export PATH=\"\$HOME/.local/bin:\$PATH\"" "${HOME}/.zshrc"; then
-      echo 'export PATH="$HOME/.local/bin:$PATH"' >>"${HOME}/.zshrc"
-      log_info "Added ${HOME}/.local/bin to PATH in .zshrc"
-    fi
-  fi
-}
-
-# Display final instructions
-show_final_instructions() {
-  log_info "Claude Desktop has been successfully installed!"
-  log_info "You can now launch it from your application menu or by running 'claude-desktop' in a terminal."
-  log_info ""
-  log_info "Note: If Claude Desktop doesn't appear in your application menu immediately,"
-  log_info "try logging out and back in, or run 'claude-desktop' from a new terminal session."
-  log_info ""
-  log_info "To use Claude Desktop with Google login, the protocol handler has been set up."
-}
-
-# Build Claude Desktop
-build_claude_desktop() {
-  log_info "Building Claude Desktop for Linux..."
-
-  # Create clean build environment
-  rm -rf "$WORK_DIR" "$OUTPUT_DIR"
-  mkdir -p "$WORK_DIR" "$OUTPUT_DIR"
-
-  setup_patchy_cnb
-  download_and_extract
-  process_icons
-  process_asar
-  create_launcher
-}
-
-# Main execution
-main() {
-  # Check for help flag
-  for arg in "$@"; do
-    if [ "$arg" = "--help" ]; then
-      show_help
-      exit 0
-    fi
-  done
-
-  log_info "Starting Claude Desktop installation/management for Ubuntu..."
-
-  # Check for remove flag
-  for arg in "$@"; do
-    if [ "$arg" = "--remove" ]; then
-      remove_existing_installation
-      exit 0
-    fi
-  done
-
-  # Check for clean install flag
-  for arg in "$@"; do
-    if [ "$arg" = "--clean-install" ]; then
-      remove_existing_installation
-    fi
-  done
-
-  # If no arguments provided and script is run directly, assume install
-  if [ $# -eq 0 ]; then
-    log_info "No options provided. Proceeding with default installation..."
-  fi
-
-  install_dependencies
-  build_claude_desktop
-  install_claude_desktop
-  show_final_instructions
-}
-
-# Run main function
-main "$@"
